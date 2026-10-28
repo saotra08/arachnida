@@ -7,12 +7,15 @@ import urllib.error
 import http.client
 from html.parser import HTMLParser
 import os
+from collections import deque
+
 
 DEFAULT_DEPTH = 5
 DEFAULT_PATH = "./data/"
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
 PAGE_TYPES = ("text/html", "application/xhtml+xml")
 IMAGE_TYPES = ("image/",)
+
 
 def is_image(url: str):
 	try:
@@ -61,7 +64,6 @@ class SpiderParser(HTMLParser):
 					self.links.add(url)
 
 
-
 def non_negative_int(value):
 	try:
 		number = int(value)
@@ -72,6 +74,7 @@ def non_negative_int(value):
 		raise argparse.ArgumentTypeError("depth must be a non-negative integer")
 
 	return number
+
 
 def parse_args():
 	parser = argparse.ArgumentParser(prog="spider", description="Downloads the images of a website, optionally following its links recursively")
@@ -119,6 +122,7 @@ def parse_args():
 
 	return (args)
 
+
 def correct_url(url: str) -> str:
 	parts = urlsplit(url)
 
@@ -133,6 +137,7 @@ def correct_url(url: str) -> str:
 		parts.fragment
 	))
 	)
+
 
 def fetch_page(url: str, accepted: tuple):
 	try:
@@ -156,6 +161,7 @@ def fetch_page(url: str, accepted: tuple):
 		print(f"Bad HTTP response: {url}", file=sys.stderr)
 	return (None)
 
+
 def make_filename(dir: str, url: str):
 	name = os.path.basename(unquote(urlsplit(url).path))
 
@@ -173,6 +179,7 @@ def make_filename(dir: str, url: str):
 
 	return path
 
+
 def save_image(path: str, data) -> bool:
 	try:
 		with open(path, "wb") as f:
@@ -181,6 +188,66 @@ def save_image(path: str, data) -> bool:
 	except OSError as e:
 		print(f"Cannot write {path}: {e.strerror}", file=sys.stderr)
 		return (False)
+
+
+def download_image(images: set, dir: str, seen_images: set, stats: dict):
+	for image in sorted(images - seen_images):
+		seen_images.add(image)
+		result = fetch_page(image, IMAGE_TYPES)
+		
+		if result is None:
+			continue
+		
+		_, _, image_data = result
+		
+		path = make_filename(dir, image)
+		if path is not None and save_image(path, image_data):
+			stats["images"] += 1
+
+
+def crawl(start_url: str, max_depth: int, dir: str, stats: dict) -> bool:
+	queue = deque([(start_url, 0)])
+	visited = set()
+	seen_images = set()
+	host = None
+
+	while queue:
+		url, depth = queue.popleft()
+		if url in visited:
+			continue
+
+		visited.add(url)
+
+		page = fetch_page(url, PAGE_TYPES)
+		if page is None:
+			if depth == 0:
+				return (False)
+			continue
+
+		final_url, _, body = page
+		visited.add(final_url)
+
+		if depth == 0:
+			host = urlsplit(final_url).hostname
+		elif urlsplit(final_url).hostname != host:
+			continue
+
+		stats["pages"] += 1
+		print(f"[{depth}] {final_url}")
+
+		parser = SpiderParser(final_url)
+		parser.feed(body.decode("utf-8", errors="replace"))
+		parser.close()
+
+		download_image(parser.images, dir, seen_images, stats)
+
+		if depth < max_depth:
+			for link in sorted(parser.links):
+				if link not in visited and urlsplit(link).hostname == host:
+					queue.append((link, depth + 1))
+
+	return (True)
+
 
 def main():
 	args = parse_args()
@@ -191,37 +258,20 @@ def main():
 		print(f"Cannot create {args.p}: {e.strerror}", file=sys.stderr)
 		return (1)
 
-	page = fetch_page(args.url, PAGE_TYPES)
+	stats = {"pages": 0, "images": 0}
+	status = 0
 
-	if page is None:
-		return (1)
-	
-	final_url, content_type, body = page
-	parser = SpiderParser(final_url)
-	html = body.decode("utf-8", errors="replace")
-	parser.feed(html)
-	parser.close()
-	
-	print(f"URL:{final_url}   CONTENT_TYPE:{content_type}")
-	print(f"\n\n{len(parser.images)} IMAGES:\n")
+	try:
+		if not crawl(args.url, args.depth, args.p, stats):
+			status = 1
+	except KeyboardInterrupt:
+		print("\nInterrupted", file=sys.stderr)
+		status = 130
 
-	saved = 0
-	for image in sorted(parser.images):
-		result = fetch_page(image, IMAGE_TYPES)
-		if result is None:
-			continue
-		_, _, image_data = result
-		path = make_filename(args.p, image)
-		if path is not None and save_image(path, image_data):
-			saved += 1
-		print(image)
-	
-	print(f"\n{saved} image(s) saved to {args.p}\n")
-	print(f"\n\n{len(parser.links)} LINKS:\n")
-	
-	for link in sorted(parser.links):
-		print(link)
-	return (0)
+	print(f"{stats['images']} image(s) saved to {args.p} from {stats['pages']} page(s)")
+
+	return (status)
+
 
 if __name__ == "__main__":
 	sys.exit(main())
