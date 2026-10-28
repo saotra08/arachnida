@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+import argparse
+import sys
+from urllib.parse import urlparse, urlsplit, urlunsplit, quote
+import urllib.request
+import urllib.error
+import http.client
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urldefrag
+
+DEFAULT_DEPTH = 5
+DEFAULT_PATH = "./data/"
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".gif", ".bmp")
+PAGE_TYPES = ("text/html", "application/xhtml+xml")
+IMAGE_TYPES = ("image/",)
+
+def is_image(url: str):
+	try:
+		return (urlsplit(url).path.lower().endswith(IMAGE_EXTENSIONS))
+	except ValueError:
+		return (False)
+
+
+class SpiderParser(HTMLParser):
+	def __init__(self, url):
+		super().__init__()
+		self.url = url
+		self.images = set()
+		self.links = set()
+
+	def handle_starttag(self, tag, attrs):
+		attrs = dict(attrs)
+		tag = tag.lower()
+
+		if tag == "a":
+			candidates = [attrs.get("href")]
+		elif tag == "img":
+			candidates = [attrs.get("src"), attrs.get("data-src")]
+		else:
+			return
+
+		for href in candidates:
+			if not href:
+				continue
+
+			try:
+				url = urljoin(self.url, href.strip())
+				parsed = urlsplit(url)
+			except ValueError:
+				continue
+
+			if not parsed.netloc or parsed.scheme.lower() not in ("http", "https"):
+				continue
+			url = parsed._replace(fragment="").geturl()
+
+			if is_image(url):
+				if url not in self.images:
+					self.images.add(url)
+			elif tag.lower() == "a":
+				if url not in self.links:
+					self.links.add(url)
+
+
+
+def non_negative_int(value):
+	try:
+		number = int(value)
+	except ValueError:
+		raise argparse.ArgumentTypeError(f"invalid integer: {value}")
+
+	if number < 0:
+		raise argparse.ArgumentTypeError("depth must be a non-negative integer")
+
+	return number
+
+def parse_args():
+	parser = argparse.ArgumentParser(prog="spider", description="Downloads the images of a website, optionally following its links recursively")
+	parser.add_argument(
+		"-r",
+		action="store_true", 
+		help="Recursively download the images of `URL` and of the pages it links to"
+	)
+	parser.add_argument(
+		"-l",
+		type=non_negative_int,
+		metavar="N",
+		help=f"maximum depth of the recursion, only with -r (default: {DEFAULT_DEPTH})"
+	)
+	parser.add_argument(
+		"-p",
+		default=DEFAULT_PATH,
+		metavar="PATH",
+		help=f"directory where the images are saved (default: {DEFAULT_PATH})"
+	)
+	parser.add_argument(
+		"url",
+		metavar="URL",
+		help="http:// or https:// address to start from"
+	)
+
+	args = parser.parse_args()
+
+	if args.l is not None and not args.r:
+		parser.error("-l requires -r")
+	if not args.r:
+		args.depth = 0
+	elif args.l is None:
+		args.depth = DEFAULT_DEPTH
+	else:
+		args.depth = args.l
+
+	try:
+		parts = urlparse(args.url)
+	except ValueError:
+		parser.error(f"invalid URL: {args.url}")
+
+	if parts.scheme not in ("http", "https") or not parts.hostname:
+		parser.error(f"invalid URL: {args.url} (expected http:// or https://)")
+
+	return (args)
+
+def correct_url(url: str) -> str:
+	parts = urlsplit(url)
+
+	path = quote(parts.path, safe="/%:@!$&'()*+,;=-._~")
+	query = quote(parts.query, safe="/?%:@!$&'()*+,;=-._~")
+
+	return (urlunsplit((
+		parts.scheme,
+		parts.netloc,
+		path, 
+		query,
+		parts.fragment
+	))
+	)
+
+def fetch_page(url: str, accepted: tuple):
+	try:
+		r_url = correct_url(url)
+		request = urllib.request.Request(r_url, headers={"User-Agent": "ArachnidaSpider/1.0"})
+		with urllib.request.urlopen(request, timeout=10) as response:
+			content_type = response.headers.get_content_type()
+			if not content_type.startswith(accepted):
+				print(f"Unsupported content type: {content_type}", file=sys.stderr)
+				return (None)
+			return (response.url, content_type, response.read())
+	except urllib.error.HTTPError as e:
+		print(f"HTTP Error {e.code}: {url}", file=sys.stderr)
+	except urllib.error.URLError as e:
+		print(f"URL Error: {e.reason}: {url}", file=sys.stderr)
+	except (TimeoutError, OSError) as e:
+		print(f"Network error: {e}: {url}", file=sys.stderr)
+	except (ValueError, UnicodeError):
+		print(f"Invalid URL: {url}", file=sys.stderr)
+	except http.client.HTTPException:
+		print(f"Bad HTTP response: {url}", file=sys.stderr)
+	return (None)
+
+
+def main():
+	args = parse_args()
+	page = fetch_page(args.url, PAGE_TYPES)
+	if page is None:
+		return 1
+	final_url, content_type, body = page
+	parser = SpiderParser(final_url)
+	html = body.decode("utf-8", errors="replace")
+	parser.feed(html)
+	parser.close()
+	print(args)
+	print(f"URL:{final_url}   CONTENT_TYPE:{content_type}")
+	print(html[:300])
+	print(f"\n\n{len(parser.images)} IMAGES:\n")
+	for image in sorted(parser.images):
+		result = fetch_page(image, IMAGE_TYPES)
+		if result is None:
+			continue
+		print(image)
+	print(f"\n\n{len(parser.links)} LINKS:\n")
+	for link in sorted(parser.links):
+		print(link)
+	return (0)
+
+if __name__ == "__main__":
+	sys.exit(main())
