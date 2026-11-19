@@ -3,6 +3,19 @@ import sys
 import os
 import argparse
 
+
+SIGNATURES = (
+	(b"\xff\xd8\xff", "JPEG"),
+	(b"\x89PNG\r\n\x1a\n", "PNG"),
+	(b"GIF87a", "GIF"),
+	(b"GIF89a", "GIF"),
+	(b"BM", "BMP"),
+)
+
+
+EXTENSIONS = {"JPEG": (".jpg", ".jpeg"), "PNG": (".png",), "GIF": (".gif",), "BMP": (".bmp",)}
+
+
 def parse_args():
 	parser = argparse.ArgumentParser(prog="scorpion", description="Displays the metadata of image files: basic file attributes and EXIF data.")
 	parser.add_argument("files", nargs="+", metavar="FILE", help="image files to analyze")
@@ -24,6 +37,14 @@ def show_file(label: str, value):
 	print(f"   {label:<20}: {value}")
 
 
+def detect_format(data: bytes):
+	for sign, name in SIGNATURES:
+		if data.startswith(sign):
+			return (name)
+
+	return (None)	
+
+
 def analyze_file(path: str) -> bool:
 	file = read_file(path)
 	
@@ -32,6 +53,17 @@ def analyze_file(path: str) -> bool:
 
 	data, st = file
 	print(f"=====> {path} <=====")
+	
+	fmt = detect_format(data)
+	if fmt is None:
+		print(f"scorpion: {path}: unsupported format", file=sys.stderr)
+		return (False)
+
+	ext = os.path.splitext(path)[1].lower()
+	if ext not in EXTENSIONS[fmt]:
+		show_file("Warning", f"extension '{ext or '(none)'}' but the content is {fmt}")
+
+	show_file("Format: ", fmt)
 	show_file("Size:", f"{len(data)} bytes")
 	print()
 	return (True)
