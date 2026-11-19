@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+import sys
+import os
+import argparse
+
+def parse_args():
+	parser = argparse.ArgumentParser(prog="scorpion", description="Displays the metadata of image files: basic file attributes and EXIF data.")
+	parser.add_argument("files", nargs="+", metavar="FILE", help="image files to analyze")
+	return (parser.parse_args())
+
+
+def read_file(path: str):
+	"""Return (data, stat) for the file, or None after printing the error."""
+	try:
+		with open(path, "rb") as f:
+			return (f.read(), os.fstat(f.fileno()))
+
+	except OSError as e:
+		print(f"scorpion: {path}: {e.strerror}", file=sys.stderr)
+		return (None)
+
+
+def show_file(label: str, value):
+	print(f"   {label:<20}: {value}")
+
+
+def analyze_file(path: str) -> bool:
+	file = read_file(path)
+	
+	if file is None:
+		return (False)
+
+	data, st = file
+	print(f"=====> {path} <=====")
+	show_file("Size:", f"{len(data)} bytes")
+	print()
+	return (True)
+
+
+def main():
+	sys.stdout.reconfigure(line_buffering=True)
+	args = parse_args()
+	status = 0
+
+	try:
+		for path in args.files:
+			if not analyze_file(path):
+				status = 1
+
+	except KeyboardInterrupt:
+		print("\nInterrupted", file=sys.stderr)
+		return (130)
+
+	return (status)
+
+if __name__ == "__main__":
+	sys.exit(main())
